@@ -1,0 +1,1619 @@
+{
+  "id": "P0MainCore2026",
+  "name": "P0 Flagship Lead Intake — Visible Native Orchestration",
+  "active": false,
+  "nodes": [
+    {
+      "id": "ae44ce1b-2508-4341-aafd-8a525c0e7ab5",
+      "name": "Webhook — Lead Intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "p0-lead-intake",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "ed374ae2-1331-422e-98df-20a9d3bf453f",
+      "name": "Code — Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'); const headers=$json.headers||{}; const raw=$json.body; const allowed=['lead_id','source','created_at','first_name','last_name','email','phone','service_requested','postal_code','message','consent_to_contact']; let malformed=!raw||typeof raw!=='object'||Array.isArray(raw); let lead={},unknown=[]; if(!malformed){for(const [k,v] of Object.entries(raw)){if(!allowed.includes(k)){unknown.push(k);continue;}lead[k]=typeof v==='string'?(v.trim()||null):v;} if(typeof lead.source==='string')lead.source=lead.source.toLowerCase(); if(typeof lead.email==='string')lead.email=lead.email.toLowerCase(); if(typeof lead.phone==='string'){const supplied=lead.phone;lead.phone=supplied.replace(/[^0-9+]/g,'')||(supplied?'INVALID':null);} if(typeof lead.service_requested==='string'){const s={'hvac':'HVAC','plumbing':'Plumbing','general maintenance':'General Maintenance'};lead.service_requested=s[lead.service_requested.toLowerCase()]||lead.service_requested;}} const sha=v=>'sha256:'+crypto.createHash('sha256').update(String(v)).digest('hex'); return [{json:{headers,raw,lead,unknown,malformed,content_type:String(headers['content-type']||''),content_length:Number(headers['content-length']||0),execution_id:String($execution.id),raw_sha:sha(typeof raw==='string'?raw:JSON.stringify(raw))}}];"
+      }
+    },
+    {
+      "id": "71d318ee-c2b5-4bf2-b453-92d377b37886",
+      "name": "Code — Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const l=$json.lead; let reason=null,status='rejected',http=422; if($json.content_length>32768){reason='M_BODY_TOO_LARGE';http=413;} else if($json.malformed){reason='M_MALFORMED_OR_NON_OBJECT';http=400;} else if(!$json.content_type.toLowerCase().startsWith('application/json')){reason='M_WRONG_CONTENT_TYPE';http=400;} else if(!['website_form','meta_ad','google_ad','phone_intake'].includes(l.source))reason='V_INVALID_SOURCE'; else if(typeof l.lead_id==='string'&&!/^[A-Za-z0-9_-]{6,64}$/.test(l.lead_id))reason='V_INVALID_LEAD_ID'; else if(!l.first_name||typeof l.first_name!=='string'||l.first_name.length>50||!l.last_name||typeof l.last_name!=='string'||l.last_name.length>50)reason='V_MISSING_NAME'; else if(!l.email&&!l.phone)reason='V_MISSING_CONTACT'; else if(l.email&&!/^[^@\\s]+@[^@\\s]+\\.[A-Za-z]{2,}$/.test(l.email))reason='V_INVALID_EMAIL'; else if(l.phone&&(()=>{const d=String(l.phone).replace(/\\D/g,'');return d.length<10||d.length>15})())reason='V_INVALID_PHONE'; else if(!['HVAC','Plumbing','General Maintenance'].includes(l.service_requested))reason='V_UNSUPPORTED_SERVICE'; else if(!/^\\d{5}$/.test(String(l.postal_code||'')))reason='V_INVALID_POSTAL'; else if(Number(l.postal_code)<78701||Number(l.postal_code)>78759){reason='V_OUT_OF_COVERAGE';status='quarantined';} else if(l.message&&(typeof l.message!=='string'||l.message.length>1000))reason='V_INVALID_MESSAGE'; else if(l.consent_to_contact!==true)reason='V_CONSENT_REQUIRED'; else if(l.created_at&&(!Number.isFinite(Date.parse(l.created_at))||Date.parse(l.created_at)>Date.now()+86400000))reason='V_INVALID_CREATED_AT'; return [{json:{...$json,valid:!reason,rejection:{reason,status,http}}}];"
+      }
+    },
+    {
+      "id": "2aa90211-46f5-45ee-a73a-6a4dafb9ab75",
+      "name": "IF — Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.valid }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "d871a20f-7c3c-42bf-b1b9-50366a0247d4",
+      "name": "Prepare Rejection Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        -300
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$json,rejection_request:{execution_id:$json.execution_id,status:$json.rejection.status,reason_code:$json.rejection.reason,payload_sha256:$json.raw_sha,unknown_fields:$json.unknown}}}];"
+      }
+    },
+    {
+      "id": "35e50a97-0c8f-4418-abce-6541147a086e",
+      "name": "HTTP — Log Rejection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1140,
+        -300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8765/rejections",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rejection_request) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "990f975e-3d23-4fcd-b5cb-7b85908ca8d1",
+      "name": "Exact Rejection Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1380,
+        -300
+      ],
+      "parameters": {
+        "jsCode": "const b=$json.body||{}; const src=$('Prepare Rejection Event').item.json; return [{json:{statusCode:src.rejection.http,body:{status:src.rejection.status,reason:src.rejection.reason,rejection_event_id:b.rejection_event_id||null},retryAfter:null}}];"
+      }
+    },
+    {
+      "id": "33db5e95-a058-4391-bc5c-9bc5db8b688e",
+      "name": "Respond — 400 / 413 / 422",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1620,
+        -300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "001df57b-c95b-4383-9494-b518072f9449",
+      "name": "Code — Build Idempotency Key + Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        120
+      ],
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'); const l=$json.lead; const sha=v=>'sha256:'+crypto.createHash('sha256').update(v).digest('hex'); const canonical=v=>JSON.stringify(v,Object.keys(v).sort()); const material=l.lead_id?`${l.source}|${l.lead_id}`:`${l.source}|${l.email||''}|${String(l.phone||'').replace(/\\D/g,'')}|${l.postal_code}|${l.service_requested}`; const key=sha(material),team=l.service_requested==='Plumbing'?'Team B — Water':'Team A — Climate',priority=/urgent|emergency|no heat|no water|flood|leak|burst/i.test(l.message||'')?'urgent':'normal'; const initials=`${l.first_name[0]}.${l.last_name[0]}.`; return [{json:{...$json,key,team,priority,payload_sha:sha(canonical(l)),masked_summary:`${initials}|${l.service_requested}|${l.postal_code}|${team}|${priority}`,trace:{state_transitions:['processing'],retries:{},reconciled:[]}}}];"
+      }
+    },
+    {
+      "id": "2a6d4b97-d86e-4047-96c8-f7dd22ed618b",
+      "name": "Prepare Atomic Claim HTTP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        120
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$json,step:'atomic_claim',request:{method:'POST',url:'http://127.0.0.1:8765/state/claim',body:{idempotency_key:$json.key,lead_id:$json.lead.lead_id||null,execution_id:$json.execution_id,payload_sha256:$json.payload_sha}}}}];"
+      }
+    },
+    {
+      "id": "402180dd-5e33-4883-a381-e90c21aa0d88",
+      "name": "HTTP — Atomic Claim via Retry Subworkflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1380,
+        120
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "P0RetryHTTP26",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "d10204d3-2794-4b90-ab16-f984e7123c7a",
+      "name": "Classify Claim Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        120
+      ],
+      "parameters": {
+        "jsCode": "const r=$json.retry; let claim_case='dependency_failure'; if(r.ok){const b=r.result.body||{}; if(b.claimed)claim_case='new'; else {const s=b.state||{}; if(s.processing_state==='completed')claim_case='completed_duplicate'; else if(['processing','crm_written','notification_pending'].includes(s.processing_state)&&Number(s.lease_expires_at||0)>Date.now()/1000)claim_case='already_processing'; else claim_case='failed_replayable';}} return [{json:{...$json,claim_case,claim_body:r.result.body||{},claim_attempts:r.attempts}}];"
+      }
+    },
+    {
+      "id": "13ffbd9f-ef8b-49a6-9e81-b0ef12ff35bf",
+      "name": "Switch — Claim Result",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        1860,
+        120
+      ],
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ ({completed_duplicate:0,already_processing:1,dependency_failure:2,failed_replayable:3,new:3})[$json.claim_case] ?? 2 }}"
+      }
+    },
+    {
+      "id": "5d7a074b-aee7-46c0-9307-7c3491d709a8",
+      "name": "Exact Duplicate Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        -220
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{statusCode:200,body:{status:'duplicate_ignored',idempotency_key:$json.key},retryAfter:null}}];"
+      }
+    },
+    {
+      "id": "f5c9ef83-575f-4440-aa28-8812469e0c22",
+      "name": "Respond — 200 duplicate_ignored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2340,
+        -220
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "c6b457ce-47ca-4c65-9d38-29ad36f3ae44",
+      "name": "Exact In Progress Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        -80
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{statusCode:202,body:{status:'already_in_progress',idempotency_key:$json.key},retryAfter:5}}];"
+      }
+    },
+    {
+      "id": "e8c2c393-f876-4139-9293-4844ebd64d71",
+      "name": "Respond — 202 already_in_progress",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2340,
+        -80
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "48e51cc2-d2a0-4495-9816-f8753bf456d1",
+      "name": "Prepare State Dependency Ops Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        60
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$json,step:'state_dependency_ops',request:{method:'PUT',url:`http://127.0.0.1:8766/alerts/${encodeURIComponent('state_'+$json.execution_id+':ops_error_v1')}`,body:{type:'operational',masked_body:`AUTOMATION FAILURE | atomic_claim | ${$json.retry.result.status||'NETWORK'} | attempts ${$json.retry.attempts.length} | ${$json.payload_sha.slice(0,19)}`}}}}];"
+      }
+    },
+    {
+      "id": "7969d184-0ecf-4431-8eff-e57ecb729041",
+      "name": "Execute Workflow — State Failure Ops Alert Retry",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        2340,
+        60
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "P0RetryHTTP26",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "68ee0f5e-e775-44bc-ad32-12d5e6cbcc8b",
+      "name": "Exact 503 Fail-Closed Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2580,
+        60
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{statusCode:503,body:{status:'dependency_unavailable',step:'atomic_claim',attempts:$json.claim_attempts},retryAfter:60}}];"
+      }
+    },
+    {
+      "id": "3f07e252-cc0f-4cec-952b-308759f9b552",
+      "name": "Respond — 503 dependency_unavailable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2820,
+        60
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "533ccd05-4b47-4feb-9086-08594de59e12",
+      "name": "IF / Route — New vs Replay Required",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        260
+      ],
+      "parameters": {
+        "jsCode": "if($json.claim_case==='failed_replayable')return [{json:{statusCode:200,body:{status:'duplicate_requires_replay',processing_state:$json.claim_body.state?.processing_state,idempotency_key:$json.key},retryAfter:null,continue_business:false}}]; return [{json:{...$json,continue_business:true}}];"
+      }
+    },
+    {
+      "id": "f0c106bf-d3cc-40da-a5d1-3aa0a3b58465",
+      "name": "IF — Continue New Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2340,
+        260
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.continue_business }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "085ec6e2-4937-4ab5-980b-375b04f71a24",
+      "name": "Respond — 200 duplicate_requires_replay",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2580,
+        420
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "bfbe60d8-8e35-4d2a-81f1-53e4492d8956",
+      "name": "Route — Prepare CRM Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2580,
+        220
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$json,step:'crm',request:{method:'PUT',url:`http://127.0.0.1:8765/crm/leads/${encodeURIComponent($json.key)}`,body:{payload_sha256:$json.payload_sha,canonical_lead:$json.lead,team:$json.team,priority:$json.priority}}}}];"
+      }
+    },
+    {
+      "id": "6aba96a8-20df-41e6-a1cf-068a6d4b0036",
+      "name": "Execute Workflow — CRM Retry",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        2820,
+        220
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "P0RetryHTTP26",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "e8e4c230-b806-444e-b300-37a0127700bd",
+      "name": "Capture CRM Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3060,
+        220
+      ],
+      "parameters": {
+        "jsCode": "const t=$json.trace;t.retries.crm=$json.retry.attempts;if($json.retry.reconciled)t.reconciled.push('crm');return [{json:{...$json,trace:t,stage_ok:$json.retry.ok,stage:'crm'}}];"
+      }
+    },
+    {
+      "id": "4d858a8c-96de-4eff-8097-38e94f54bf45",
+      "name": "IF — CRM Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        3300,
+        220
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.stage_ok }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "430e0820-e382-42eb-8ff4-ca7549bad3fe",
+      "name": "Prepare CRM Checkpoint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3540,
+        120
+      ],
+      "parameters": {
+        "jsCode": "const id=$json.retry.result.body.destination_record_id;return [{json:{...$json,destination_id:id,checkpoint:{processing_state:'crm_written',last_step:'crm',last_error:null,destination_record_id:id,team:$json.team,priority:$json.priority,retry_count:0,execution_id:$json.execution_id}}}];"
+      }
+    },
+    {
+      "id": "d5953283-1876-4bc5-96bd-927b3ab49f74",
+      "name": "HTTP — CRM Checkpoint / Receipt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3780,
+        120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/checkpoint",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.checkpoint) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "9088a87e-2187-4921-9585-a262cb326320",
+      "name": "Prepare notification_pending",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4020,
+        120
+      ],
+      "parameters": {
+        "jsCode": "const src=$('Prepare CRM Checkpoint').item.json;src.trace.state_transitions.push('crm_written');return [{json:{...src,checkpoint:{processing_state:'notification_pending',notification_status:'pending',last_step:'alert',execution_id:src.execution_id}}}];"
+      }
+    },
+    {
+      "id": "1d6e9df5-86c2-4fc7-a3c1-70589e79dcf7",
+      "name": "HTTP — Set notification_pending",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4260,
+        120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/checkpoint",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.checkpoint) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d60ebca1-b53a-4389-8b76-d436c80275b9",
+      "name": "Prepare Owner Alert Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4500,
+        120
+      ],
+      "parameters": {
+        "jsCode": "const src=$('Prepare notification_pending').item.json;src.trace.state_transitions.push('notification_pending');const alertKey=`${src.key}:lead_owner_v1`;const body=`NEW LEAD | ${src.lead.first_name[0]}.${src.lead.last_name[0]}. | ${src.lead.service_requested} | ${src.lead.postal_code} | ${src.team} | ${src.priority} | CRM ${src.destination_id}`;return [{json:{...src,step:'alert',alert_key:alertKey,request:{method:'PUT',url:`http://127.0.0.1:8766/alerts/${encodeURIComponent(alertKey)}`,body:{type:'normal',masked_body:body}}}}];"
+      }
+    },
+    {
+      "id": "710197b6-cb6d-430d-93ff-fd7be2d48494",
+      "name": "Execute Workflow — Owner Alert Retry",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        4740,
+        120
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "P0RetryHTTP26",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "6943fe83-eecc-4ac2-aa18-9bc6dbbcee36",
+      "name": "Capture Alert Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4980,
+        120
+      ],
+      "parameters": {
+        "jsCode": "const t=$json.trace;t.retries.alert=$json.retry.attempts;if($json.retry.reconciled)t.reconciled.push('alert');return [{json:{...$json,trace:t,stage_ok:$json.retry.ok,stage:'alert'}}];"
+      }
+    },
+    {
+      "id": "dc4ce261-d27d-4243-8811-09cb58f581a8",
+      "name": "IF — Alert Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        5220,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.stage_ok }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "2f4cbc7f-003d-4c4d-9874-f12703cce59d",
+      "name": "Prepare Alert Checkpoint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5460,
+        40
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$json,checkpoint:{processing_state:'notification_pending',notification_status:'delivered',notification_receipt:$json.retry.result.body.receipt_id,last_step:'alert',last_error:null,retry_count:0,execution_id:$json.execution_id}}}];"
+      }
+    },
+    {
+      "id": "fe61b44c-276a-4dde-b745-3731d577396c",
+      "name": "HTTP — Alert Checkpoint / Receipt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5700,
+        40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/checkpoint",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.checkpoint) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d2ee9490-c768-42eb-826d-2e1fb367b565",
+      "name": "Prepare Audit Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5940,
+        40
+      ],
+      "parameters": {
+        "jsCode": "const src=$('Prepare Alert Checkpoint').item.json;const auditKey=`${src.key}:completed_v1`;return [{json:{...src,step:'audit',audit_key:auditKey,request:{method:'PUT',url:`http://127.0.0.1:8765/audit/${encodeURIComponent(auditKey)}`,body:{idempotency_key:src.key,transition:'notification_pending_to_completed',step:'completion',masked_summary:src.masked_summary,execution_id:src.execution_id}}}}];"
+      }
+    },
+    {
+      "id": "c17f3230-4e7c-449a-9e6d-a877666b62f5",
+      "name": "Execute Workflow — Audit Retry",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        6180,
+        40
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "P0RetryHTTP26",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "cd920fdd-a1aa-42e9-b946-98de28e13b5b",
+      "name": "Capture Audit Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6420,
+        40
+      ],
+      "parameters": {
+        "jsCode": "const t=$json.trace;t.retries.audit=$json.retry.attempts;if($json.retry.reconciled)t.reconciled.push('audit');return [{json:{...$json,trace:t,stage_ok:$json.retry.ok,stage:'audit'}}];"
+      }
+    },
+    {
+      "id": "53fd81c2-e7df-4426-aca3-92baa22bb377",
+      "name": "IF — Audit Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        6660,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.stage_ok }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "0ae2fc0f-b69e-41f3-802d-d4e1767944f8",
+      "name": "Prepare Audit Checkpoint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6900,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$json,checkpoint:{processing_state:'notification_pending',audit_status:'written',audit_receipt:$json.retry.result.body.event_id,last_step:'audit',last_error:null,retry_count:0,execution_id:$json.execution_id}}}];"
+      }
+    },
+    {
+      "id": "2cab95a8-a042-4cb8-8cd8-440ff6d7bde3",
+      "name": "HTTP — Audit Checkpoint / Receipt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7140,
+        -40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/checkpoint",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.checkpoint) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "550a41f2-5f65-4679-ab7f-0535eebaab48",
+      "name": "Prepare Completion Invariant",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7380,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$('Prepare Audit Checkpoint').item.json,complete:{execution_id:$('Prepare Audit Checkpoint').item.json.execution_id}}}];"
+      }
+    },
+    {
+      "id": "72edf5c2-c6dc-4aeb-88f6-5bddcb9f208d",
+      "name": "HTTP — Completion Invariant (CRM + Alert + Audit)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7620,
+        -40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/complete",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.complete) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "5e81e729-c880-4b8e-ad96-bc168fc28ba5",
+      "name": "Exact 201 Completed Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7860,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "const x=$('Prepare Completion Invariant').item.json;x.trace.state_transitions.push('completed');return [{json:{statusCode:201,body:{status:'completed',failure_id:null,idempotency_key:x.key,destination_record_id:x.destination_id,team:x.team,priority:x.priority,state_transitions:x.trace.state_transitions,retry_evidence:x.trace.retries,reconciled:x.trace.reconciled},retryAfter:null}}];"
+      }
+    },
+    {
+      "id": "56f624f5-a68f-4c19-8bb2-28980e5cf762",
+      "name": "Respond — 201 completed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        8100,
+        -40
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "4c9c0fbd-7ae4-48dc-bc2b-5659387233e3",
+      "name": "Classify Failure + Prepare State Checkpoint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5700,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const r=$json.retry,stage=$json.stage;const config=[401,403].includes(r.result.status),permanent=[400,409,422].includes(r.result.status)||config;const state=stage==='crm'?(permanent?'failed_permanent':'failed_retryable'):'partially_completed';const patch={processing_state:state,last_step:stage,last_error:String(r.result.status||'NETWORK'),retry_count:Math.max(0,r.attempts.length-1),execution_id:$json.execution_id};if(stage==='crm'){patch.team=$json.team;patch.priority=$json.priority;}if(stage==='alert')patch.notification_status='failed';if(stage==='audit')patch.audit_status='failed';return [{json:{...$json,failure_state:state,failure_config:config,failure_class:permanent?'permanent':'retryable',checkpoint:patch}}];"
+      }
+    },
+    {
+      "id": "9cafbf5b-a4dd-4638-857d-0d8ea74dd01a",
+      "name": "HTTP — Failure / Partial Checkpoint",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5940,
+        420
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/checkpoint",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.checkpoint) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "13f3cd30-d248-4f5b-8f55-1952b8255e0a",
+      "name": "Prepare Dead-Letter Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6180,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const x=$('Classify Failure + Prepare State Checkpoint').item.json;x.trace.state_transitions.push(x.failure_state);return [{json:{...x,failure_request:{failure_key:`${x.key}:${x.stage}:v1`,idempotency_key:x.key,execution_id:x.execution_id,step:x.stage,error_class:x.failure_class,error_code:String(x.retry.result.status||'NETWORK'),status:x.failure_state,retries:Math.max(0,x.retry.attempts.length-1),payload_sha256:x.payload_sha,redacted_summary:x.masked_summary,canonical_payload:x.lead}}}];"
+      }
+    },
+    {
+      "id": "225b7dc6-4052-4aa6-beb9-cac26eb77bec",
+      "name": "HTTP — Dead-Letter Create",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6420,
+        420
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8765/failures",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.failure_request) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "39a439d2-3abc-47c6-8f14-293dd8ddee3f",
+      "name": "Prepare Independent Ops Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6660,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const x=$('Prepare Dead-Letter Record').item.json;const failure_id=$json.body?.failure_id||null;const semantic=`${failure_id||('dead_letter_unavailable_'+x.execution_id)}:ops_error_v1`;return [{json:{...x,failure_id,dead_lettered:!!failure_id,request:{method:'PUT',url:`http://127.0.0.1:8766/alerts/${encodeURIComponent(semantic)}`,body:{type:'operational',masked_body:`AUTOMATION FAILURE | ${x.stage} | ${x.retry.result.status||'NETWORK'} | attempts ${x.retry.attempts.length} | ${x.payload_sha.slice(0,19)}`}}}}];"
+      }
+    },
+    {
+      "id": "985585cc-d2a3-4c78-99cb-3507292e847e",
+      "name": "Execute Workflow — Failure Ops Alert Retry",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        6900,
+        420
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "P0RetryHTTP26",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "4a2bdc7d-9506-4f40-9f5d-7fd37e8aa33c",
+      "name": "Exact 500 / 502 Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7140,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const statusCode=$json.failure_config?500:502;return [{json:{statusCode,body:{status:$json.failure_state,failure_id:$json.failure_id,dead_lettered:$json.dead_lettered,idempotency_key:$json.key,attempts:$json.retry.attempts},retryAfter:null}}];"
+      }
+    },
+    {
+      "id": "673300e9-57cd-4020-80b5-6fd1c53707a3",
+      "name": "Respond — Failure / Dead-Letter / Ops",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        7380,
+        420
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "4ae091df-197a-4f0f-9bec-d83ea950fb3e",
+      "name": "n8n Orchestrator — Architecture Marker Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Architectural marker only: /state/claim /checkpoint /crm/leads/ /audit/ /failures /complete\nreturn items;"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook — Lead Intake": {
+      "main": [
+        [
+          {
+            "node": "Code — Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Normalize": {
+      "main": [
+        [
+          {
+            "node": "Code — Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Validate": {
+      "main": [
+        [
+          {
+            "node": "IF — Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Valid?": {
+      "main": [
+        [
+          {
+            "node": "Code — Build Idempotency Key + Route",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Rejection Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Rejection Event": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Log Rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Log Rejection": {
+      "main": [
+        [
+          {
+            "node": "Exact Rejection Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exact Rejection Response": {
+      "main": [
+        [
+          {
+            "node": "Respond — 400 / 413 / 422",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Build Idempotency Key + Route": {
+      "main": [
+        [
+          {
+            "node": "Prepare Atomic Claim HTTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Atomic Claim HTTP": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Atomic Claim via Retry Subworkflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Atomic Claim via Retry Subworkflow": {
+      "main": [
+        [
+          {
+            "node": "Classify Claim Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Claim Result": {
+      "main": [
+        [
+          {
+            "node": "Switch — Claim Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch — Claim Result": {
+      "main": [
+        [
+          {
+            "node": "Exact Duplicate Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Exact In Progress Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare State Dependency Ops Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF / Route — New vs Replay Required",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exact Duplicate Response": {
+      "main": [
+        [
+          {
+            "node": "Respond — 200 duplicate_ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exact In Progress Response": {
+      "main": [
+        [
+          {
+            "node": "Respond — 202 already_in_progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare State Dependency Ops Alert": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow — State Failure Ops Alert Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow — State Failure Ops Alert Retry": {
+      "main": [
+        [
+          {
+            "node": "Exact 503 Fail-Closed Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exact 503 Fail-Closed Response": {
+      "main": [
+        [
+          {
+            "node": "Respond — 503 dependency_unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF / Route — New vs Replay Required": {
+      "main": [
+        [
+          {
+            "node": "IF — Continue New Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Continue New Lead?": {
+      "main": [
+        [
+          {
+            "node": "Route — Prepare CRM Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond — 200 duplicate_requires_replay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route — Prepare CRM Request": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow — CRM Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow — CRM Retry": {
+      "main": [
+        [
+          {
+            "node": "Capture CRM Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Capture CRM Retry": {
+      "main": [
+        [
+          {
+            "node": "IF — CRM Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — CRM Success?": {
+      "main": [
+        [
+          {
+            "node": "Prepare CRM Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Failure + Prepare State Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare CRM Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "HTTP — CRM Checkpoint / Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — CRM Checkpoint / Receipt": {
+      "main": [
+        [
+          {
+            "node": "Prepare notification_pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare notification_pending": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Set notification_pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Set notification_pending": {
+      "main": [
+        [
+          {
+            "node": "Prepare Owner Alert Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Owner Alert Request": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow — Owner Alert Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow — Owner Alert Retry": {
+      "main": [
+        [
+          {
+            "node": "Capture Alert Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Capture Alert Retry": {
+      "main": [
+        [
+          {
+            "node": "IF — Alert Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Alert Success?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Alert Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Failure + Prepare State Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Alert Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Alert Checkpoint / Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Alert Checkpoint / Receipt": {
+      "main": [
+        [
+          {
+            "node": "Prepare Audit Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Audit Request": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow — Audit Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow — Audit Retry": {
+      "main": [
+        [
+          {
+            "node": "Capture Audit Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Capture Audit Retry": {
+      "main": [
+        [
+          {
+            "node": "IF — Audit Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Audit Success?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Audit Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Failure + Prepare State Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Audit Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Audit Checkpoint / Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Audit Checkpoint / Receipt": {
+      "main": [
+        [
+          {
+            "node": "Prepare Completion Invariant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Completion Invariant": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Completion Invariant (CRM + Alert + Audit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Completion Invariant (CRM + Alert + Audit)": {
+      "main": [
+        [
+          {
+            "node": "Exact 201 Completed Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exact 201 Completed Response": {
+      "main": [
+        [
+          {
+            "node": "Respond — 201 completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Failure + Prepare State Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Failure / Partial Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Failure / Partial Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "Prepare Dead-Letter Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Dead-Letter Record": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Dead-Letter Create",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Dead-Letter Create": {
+      "main": [
+        [
+          {
+            "node": "Prepare Independent Ops Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Independent Ops Alert": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow — Failure Ops Alert Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow — Failure Ops Alert Retry": {
+      "main": [
+        [
+          {
+            "node": "Exact 500 / 502 Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exact 500 / 502 Failure Response": {
+      "main": [
+        [
+          {
+            "node": "Respond — Failure / Dead-Letter / Ops",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "errorWorkflow": "P0ErrorCore2026"
+  }
+}

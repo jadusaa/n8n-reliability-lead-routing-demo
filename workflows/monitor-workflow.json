@@ -1,0 +1,282 @@
+{
+  "id": "P0MonitorCore26",
+  "name": "P0 Silent-Failure Monitor — Native 15m",
+  "active": false,
+  "nodes": [
+    {
+      "id": "67558890-42b9-41f6-9b7f-57acf1e0792e",
+      "name": "Schedule — Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        -100
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "24ddefec-72f2-47dc-9cc5-88a63841ead0",
+      "name": "Webhook — Test Monitor Now",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        100
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "p0-monitor-run",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "6471c869-b080-4d00-ba02-0e33052a37d2",
+      "name": "HTTP — Read 60-Minute Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "http://127.0.0.1:8765/metrics",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b545894b-6374-4c81-9bdc-90c45f41c3a1",
+      "name": "Code — Evaluate Guard + Bucket",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const m=$json.body||$json;const alert_needed=Number(m.stale_active)>0||(Number(m.claims)>0&&Number(m.completed)===0);const bucket=Math.floor(Date.now()/900000);return [{json:{metrics:m,alert_needed,bucket,request:{type:'observability',masked_body:`SILENT FAILURE GUARD | claims ${m.claims} | completed ${m.completed} | failures ${m.failures} | stale ${m.stale_active}`}}}];"
+      }
+    },
+    {
+      "id": "41c5860d-4876-4a6f-b144-410da92dd3c6",
+      "name": "IF — Ops Alert Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        740,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.alert_needed }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "0873c909-fd61-4d0b-a7fa-29e352d56ec6",
+      "name": "HTTP — Bucketed Ops Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        -80
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://127.0.0.1:8766/alerts/{{ encodeURIComponent(\"monitor:\"+$json.bucket) }}",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b3eb2add-2c62-483c-a6e3-21bb64cd309e",
+      "name": "Format Alerted Monitor Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        -80
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{statusCode:200,body:{status:'alerted',bucket:$('Code — Evaluate Guard + Bucket').item.json.bucket,metrics:$('Code — Evaluate Guard + Bucket').item.json.metrics,receipt:$json.body||$json}}}];"
+      }
+    },
+    {
+      "id": "b56ebf7d-ec25-4bc8-910f-7b957f45c53e",
+      "name": "Format Healthy Monitor Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        160
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{statusCode:200,body:{status:'healthy',bucket:$json.bucket,metrics:$json.metrics,receipt:null}}}];"
+      }
+    },
+    {
+      "id": "7f463a0e-d29e-4ca0-9a75-b7bbecc7c9e0",
+      "name": "Return Captured Metrics + Receipt",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1460,
+        40
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule — Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Read 60-Minute Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook — Test Monitor Now": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Read 60-Minute Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Read 60-Minute Metrics": {
+      "main": [
+        [
+          {
+            "node": "Code — Evaluate Guard + Bucket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Evaluate Guard + Bucket": {
+      "main": [
+        [
+          {
+            "node": "IF — Ops Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Ops Alert Needed?": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Bucketed Ops Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Healthy Monitor Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Bucketed Ops Alert": {
+      "main": [
+        [
+          {
+            "node": "Format Alerted Monitor Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alerted Monitor Response": {
+      "main": [
+        [
+          {
+            "node": "Return Captured Metrics + Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Healthy Monitor Response": {
+      "main": [
+        [
+          {
+            "node": "Return Captured Metrics + Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "errorWorkflow": "P0ErrorCore2026"
+  }
+}

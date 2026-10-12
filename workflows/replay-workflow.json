@@ -1,0 +1,895 @@
+{
+  "id": "P0ReplayCore26",
+  "name": "P0 — Replay Failed Lead — Visible Receipts",
+  "active": false,
+  "nodes": [
+    {
+      "id": "2362fb34-118c-4d6e-b56a-decfe5bdfddd",
+      "name": "Webhook — Replay by failure_id",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "p0-lead-replay",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "2a499175-757c-447e-9663-0a656c4020c1",
+      "name": "Normalize Replay Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{failure_id:$json.body?.failure_id||null,idempotency_key:$json.body?.idempotency_key||null,corrected:$json.body?.corrected===true,execution_id:String($execution.id)}}];"
+      }
+    },
+    {
+      "id": "f8d9b67c-b485-407b-b23b-7ab1ea2f14fd",
+      "name": "HTTP — Load Failure / State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=http://127.0.0.1:8765/{{ $json.failure_id ? \"failures/\"+encodeURIComponent($json.failure_id) : \"state/\"+encodeURIComponent($json.idempotency_key) }}",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "51aba6f4-9431-4ec1-910c-1abd6f427adb",
+      "name": "Classify Replay Eligibility + Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const req=$('Normalize Replay Request').item.json;const status=Number($json.statusCode||0),b=$json.body||{};if(status!==200)return [{json:{eligible:false,statusCode:422,body:{status:'replay_rejected',reason:req.failure_id?'R_FAILURE_NOT_FOUND':'R_STATE_NOT_FOUND'},retryAfter:null}}];if(!req.failure_id){if(b.processing_state==='completed')return [{json:{eligible:false,statusCode:200,body:{status:'replay_noop_completed',idempotency_key:req.idempotency_key},retryAfter:null}}];return [{json:{eligible:false,statusCode:422,body:{status:'replay_rejected',reason:'R_FAILURE_ID_REQUIRED'},retryAfter:null}}];}if(b.status==='failed_permanent'&&!req.corrected)return [{json:{eligible:false,statusCode:422,body:{status:'replay_blocked',reason:'R_PERMANENT_REQUIRES_CORRECTION',failure_id:req.failure_id},retryAfter:null,failure_id:req.failure_id,mark_blocked:true}}];const lead=JSON.parse(b.canonical_payload_json);const crypto=require('crypto'),sha=v=>'sha256:'+crypto.createHash('sha256').update(v).digest('hex'),canonical=v=>JSON.stringify(v,Object.keys(v).sort());const team=lead.service_requested==='Plumbing'?'Team B — Water':'Team A — Climate',priority=/urgent|emergency|no heat|no water|flood|leak|burst/i.test(lead.message||'')?'urgent':'normal';return [{json:{eligible:true,failure_id:req.failure_id,key:b.idempotency_key,lead,team,priority,payload_sha:sha(canonical(lead)),masked_summary:`${lead.first_name[0]}.${lead.last_name[0]}.|${lead.service_requested}|${lead.postal_code}|${team}|${priority}`,execution_id:req.execution_id,trace:{state_transitions:[],retries:{},reconciled:[]}}}];"
+      }
+    },
+    {
+      "id": "678ae369-b9e7-4243-a175-dd393a865c6c",
+      "name": "IF — Replay Eligible?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        920,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.eligible }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "bfb4489f-a579-4cbd-940f-aa59519e9931",
+      "name": "Respond — Replay Rejected / No-op",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1160,
+        -260
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "32942a1e-3816-46c6-af87-60db04f61714",
+      "name": "HTTP — Load Authoritative State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1160,
+        80
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "9059b79c-6d6a-4488-82c8-e9738af5db23",
+      "name": "HTTP — Reconcile CRM Receipt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        80
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=http://127.0.0.1:8765/crm/leads/{{ encodeURIComponent($(\"Classify Replay Eligibility + Context\").item.json.key) }}",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "112b7744-80eb-4470-845e-eaebf26e74b0",
+      "name": "HTTP — Reconcile Alert Receipt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1640,
+        80
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=http://127.0.0.1:8766/alerts/{{ encodeURIComponent($(\"Classify Replay Eligibility + Context\").item.json.key+\":lead_owner_v1\") }}",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "6daff57e-8685-4179-936d-f79d8ec6540e",
+      "name": "HTTP — Reconcile Audit Receipt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1880,
+        80
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=http://127.0.0.1:8765/audit/{{ encodeURIComponent($(\"Classify Replay Eligibility + Context\").item.json.key+\":completed_v1\") }}",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "54926b9c-32a4-4d74-a29b-7e5c32a69e66",
+      "name": "Switch Input — First Missing Step",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2120,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const ctx=$('Classify Replay Eligibility + Context').item.json,state=$('HTTP — Load Authoritative State').item.json.body||{};const crm=$('HTTP — Reconcile CRM Receipt').item.json,alert=$('HTTP — Reconcile Alert Receipt').item.json,audit=$json;let first_missing='complete';if(Number(crm.statusCode)!==200)first_missing='crm';else if(Number(alert.statusCode)!==200)first_missing='alert';else if(Number(audit.statusCode)!==200)first_missing='audit';return [{json:{...ctx,state,crm:crm.body||null,alert:alert.body||null,audit:audit.body||null,first_missing,destination_id:state.destination_record_id||crm.body?.destination_record_id||null}}];"
+      }
+    },
+    {
+      "id": "0d25e870-12fb-44fc-9501-88457c4788c1",
+      "name": "Switch — First Missing Step",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        2360,
+        80
+      ],
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ ({crm:0,alert:1,audit:2,complete:3})[$json.first_missing] }}"
+      }
+    },
+    {
+      "id": "76d6d75c-d06f-4947-99a2-0c1ad1aab2b6",
+      "name": "Prepare Replay CRM",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$json,step:'crm',request:{method:'PUT',url:`http://127.0.0.1:8765/crm/leads/${encodeURIComponent($json.key)}`,body:{payload_sha256:$json.payload_sha,canonical_lead:$json.lead,team:$json.team,priority:$json.priority}}}}];"
+      }
+    },
+    {
+      "id": "a8e9d59c-914d-4dd3-b5c2-a8cb6822e1cd",
+      "name": "Execute Workflow — Replay CRM Retry",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        2840,
+        -120
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "P0RetryHTTP26",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "4e8773dd-56c0-4df6-ab20-dbc2cb78f25b",
+      "name": "Replay CRM Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "if(!$json.retry.ok)return [{json:{...$json,replay_failed:true,stage:'crm'}}];return [{json:{...$json,destination_id:$json.retry.result.body.destination_record_id,checkpoint:{processing_state:'crm_written',destination_record_id:$json.retry.result.body.destination_record_id,team:$json.team,priority:$json.priority,last_step:'crm',execution_id:$json.execution_id}}}];"
+      }
+    },
+    {
+      "id": "0dd64530-d393-438c-888d-7d7be6a7b8fd",
+      "name": "HTTP — Replay CRM Checkpoint",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3320,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/checkpoint",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.checkpoint) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "62a717be-16d8-4932-ba4d-dd91a32d7add",
+      "name": "Prepare Replay Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3560,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const x=$('Switch Input — First Missing Step').item.json;const crmOut=$('Replay CRM Result').isExecuted?$('Replay CRM Result').item.json:x;const id=crmOut.destination_id||x.destination_id;const body=`NEW LEAD | ${x.lead.first_name[0]}.${x.lead.last_name[0]}. | ${x.lead.service_requested} | ${x.lead.postal_code} | ${x.team} | ${x.priority} | CRM ${id}`;return [{json:{...x,destination_id:id,step:'alert',request:{method:'PUT',url:`http://127.0.0.1:8766/alerts/${encodeURIComponent(x.key+':lead_owner_v1')}`,body:{type:'normal',masked_body:body}}}}];"
+      }
+    },
+    {
+      "id": "0c99db14-3bbc-4651-a327-ab333cd08edb",
+      "name": "Execute Workflow — Replay Alert Retry",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        3800,
+        0
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "P0RetryHTTP26",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "e597d93b-761e-4a90-afba-361d12fd3e8e",
+      "name": "Replay Alert Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4040,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$json,replay_failed:!$json.retry.ok,checkpoint:{processing_state:$json.retry.ok?'notification_pending':'partially_completed',notification_status:$json.retry.ok?'delivered':'failed',notification_receipt:$json.retry.ok?$json.retry.result.body.receipt_id:null,last_step:'alert',execution_id:$json.execution_id}}}];"
+      }
+    },
+    {
+      "id": "dd7176ef-f569-46e7-940c-325f546a7a9b",
+      "name": "HTTP — Replay Alert Checkpoint",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4280,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/checkpoint",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.checkpoint) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "be88085a-1f43-4a82-b340-b64076b573ad",
+      "name": "Prepare Replay Audit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4520,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const x=$('Switch Input — First Missing Step').item.json;return [{json:{...x,step:'audit',request:{method:'PUT',url:`http://127.0.0.1:8765/audit/${encodeURIComponent(x.key+':completed_v1')}`,body:{idempotency_key:x.key,transition:'notification_pending_to_completed',step:'completion',masked_summary:x.masked_summary,execution_id:x.execution_id}}}}];"
+      }
+    },
+    {
+      "id": "95bb32a7-10ca-449e-bfab-2158102d4fe8",
+      "name": "Execute Workflow — Replay Audit Retry",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        4760,
+        100
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "P0RetryHTTP26",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "e9126bff-93b8-4165-ae19-6a5b1bbbd30d",
+      "name": "Replay Audit Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5000,
+        100
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$json,replay_failed:!$json.retry.ok,checkpoint:{processing_state:$json.retry.ok?'notification_pending':'partially_completed',audit_status:$json.retry.ok?'written':'failed',audit_receipt:$json.retry.ok?$json.retry.result.body.event_id:null,last_step:'audit',execution_id:$json.execution_id}}}];"
+      }
+    },
+    {
+      "id": "57226321-c2e9-4af9-bffe-3277e10649fe",
+      "name": "HTTP — Replay Audit Checkpoint",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5240,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/checkpoint",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.checkpoint) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "7fa7e1b8-6bf0-4d06-82b9-54e139c2adba",
+      "name": "Prepare Replay Completion Invariant",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5480,
+        180
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{...$('Switch Input — First Missing Step').item.json,complete:{execution_id:$('Switch Input — First Missing Step').item.json.execution_id}}}];"
+      }
+    },
+    {
+      "id": "10c0e101-8d05-4472-abb7-209e1c1ed03b",
+      "name": "HTTP — Replay Completion Invariant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5720,
+        180
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/state/{{ encodeURIComponent($json.key) }}/complete",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.complete) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "c3fb0dd6-cfa8-44da-9ed9-8e02430d87bd",
+      "name": "HTTP — Update Replay Resolved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5960,
+        180
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8765/failures/{{ encodeURIComponent($json.failure_id) }}/replay-status",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({replay_status:\"resolved\",replay_notes:\"completed by visible n8n replay\"}) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "cb8498de-01c5-4213-b70c-228aa2f6f371",
+      "name": "Exact Replay Completed Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6200,
+        180
+      ],
+      "parameters": {
+        "jsCode": "const x=$('Prepare Replay Completion Invariant').item.json;return [{json:{statusCode:201,body:{status:'replay_completed',failure_id:x.failure_id,idempotency_key:x.key,destination_record_id:x.destination_id,team:x.team,priority:x.priority,state_transitions:['completed'],retry_evidence:{},reconciled:[]},retryAfter:null}}];"
+      }
+    },
+    {
+      "id": "15238871-67c7-4848-aa16-912f97a3beca",
+      "name": "Respond — Replay Exact Contract",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        6440,
+        180
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ $json.retryAfter ? String($json.retryAfter) : \"0\" }}"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook — Replay by failure_id": {
+      "main": [
+        [
+          {
+            "node": "Normalize Replay Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Replay Request": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Load Failure / State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Load Failure / State": {
+      "main": [
+        [
+          {
+            "node": "Classify Replay Eligibility + Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Replay Eligibility + Context": {
+      "main": [
+        [
+          {
+            "node": "IF — Replay Eligible?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Replay Eligible?": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Load Authoritative State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond — Replay Rejected / No-op",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Load Authoritative State": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Reconcile CRM Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Reconcile CRM Receipt": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Reconcile Alert Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Reconcile Alert Receipt": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Reconcile Audit Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Reconcile Audit Receipt": {
+      "main": [
+        [
+          {
+            "node": "Switch Input — First Missing Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Input — First Missing Step": {
+      "main": [
+        [
+          {
+            "node": "Switch — First Missing Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch — First Missing Step": {
+      "main": [
+        [
+          {
+            "node": "Prepare Replay CRM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Replay Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Replay Audit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Replay Completion Invariant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Replay CRM": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow — Replay CRM Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow — Replay CRM Retry": {
+      "main": [
+        [
+          {
+            "node": "Replay CRM Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replay CRM Result": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Replay CRM Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Replay CRM Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "Prepare Replay Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Replay Alert": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow — Replay Alert Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow — Replay Alert Retry": {
+      "main": [
+        [
+          {
+            "node": "Replay Alert Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replay Alert Result": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Replay Alert Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Replay Alert Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "Prepare Replay Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Replay Audit": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow — Replay Audit Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow — Replay Audit Retry": {
+      "main": [
+        [
+          {
+            "node": "Replay Audit Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replay Audit Result": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Replay Audit Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Replay Audit Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "Prepare Replay Completion Invariant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Replay Completion Invariant": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Replay Completion Invariant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Replay Completion Invariant": {
+      "main": [
+        [
+          {
+            "node": "HTTP — Update Replay Resolved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — Update Replay Resolved": {
+      "main": [
+        [
+          {
+            "node": "Exact Replay Completed Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exact Replay Completed Response": {
+      "main": [
+        [
+          {
+            "node": "Respond — Replay Exact Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "errorWorkflow": "P0ErrorCore2026"
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "id": "P0ErrorCore2026",
+  "name": "P0 Error Trigger — Operational Alert",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "25d1c614-085f-4c4a-83bf-382d84386344",
+      "name": "Error Trigger — Uncaught n8n Execution",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "ed97814d-ad73-4000-9d28-a350bb15f716",
+      "name": "Mask Error + Semantic Alert Key",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const e=$json; const executionId=String(e.execution?.id||'unknown'); const step=String(e.execution?.lastNodeExecuted||'uncaught'); const workflow=String(e.workflow?.name||'unknown'); return [{json:{alertKey:`n8n_error:${executionId}:ops_error_v1`,body:{type:'operational',masked_body:`AUTOMATION FAILURE | ${workflow}/${step} | UNCAUGHT | attempts 1 | execution ${executionId}`}}}];"
+      }
+    },
+    {
+      "id": "50f89d7a-e35d-478c-a54e-2e9931c4113d",
+      "name": "Independent Operational Alert Sink",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://127.0.0.1:8766/alerts/{{ encodeURIComponent($json.alertKey) }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger — Uncaught n8n Execution": {
+      "main": [
+        [
+          {
+            "node": "Mask Error + Semantic Alert Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mask Error + Semantic Alert Key": {
+      "main": [
+        [
+          {
+            "node": "Independent Operational Alert Sink",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

@@ -1,0 +1,327 @@
+{
+  "id": "P0RetryHTTP26",
+  "name": "P0 — Retryable HTTP Request",
+  "active": false,
+  "nodes": [
+    {
+      "id": "358fab66-14e8-454e-8f38-8b8665157e9b",
+      "name": "Execute Workflow Trigger — Retry Request",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "300256c4-3d7f-48d7-a32c-b9ee7772c54b",
+      "name": "Prepare Attempt Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const base={...$json}; delete base.retry; const operation_id=`${$execution.id}:${base.step||'http'}`; return [1,2,3,4].map(attempt=>({json:{...base,operation_id,attempt,max_attempts:4}}));"
+      }
+    },
+    {
+      "id": "0683141a-fb0d-4a74-bc41-8b482d50b9f0",
+      "name": "Loop Over Items — 1 Initial + 3 Retries",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "82305a86-89e4-43c3-83e4-ba0b0131da77",
+      "name": "Stamp Attempt Start",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        80
+      ],
+      "parameters": {
+        "jsCode": "return items.map(i=>({json:{...i.json,started_at:Date.now()/1000,started_ms:Date.now()}}));"
+      }
+    },
+    {
+      "id": "83507974-eef9-4a46-8cb6-e33d717df81a",
+      "name": "HTTP Request — Perform Attempt (3s timeout)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        940,
+        80
+      ],
+      "parameters": {
+        "method": "={{ $json.request.method }}",
+        "url": "={{ $json.request.url }}",
+        "options": {
+          "timeout": 3000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": "={{ [\"POST\",\"PUT\",\"PATCH\"].includes($(\"Stamp Attempt Start\").item.json.request.method) }}",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request.body || {}) }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "a11a1e5e-fb30-487c-93c6-4f60b193406d",
+      "name": "Classify Result + Timing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const meta=$('Stamp Attempt Start').item.json; const raw=$json||{}; const status=Number(raw.statusCode||raw.status||0); const body=raw.body!==undefined?raw.body:raw; const headers=raw.headers||{}; const success=status>=200&&status<300; const retryable=status===0||[408,425,429,500,502,503,504].includes(status); const permanent=!success&&!retryable; const retryAfterRaw=headers['retry-after']??headers['Retry-After']; const retryAfter=/^\\d+$/.test(String(retryAfterRaw??''))?Math.max(1,Math.min(30,Number(retryAfterRaw))):null; return [{json:{...meta,status,body,headers,success,retryable,permanent,classification:success?'success':(retryable?'retryable':'permanent'),elapsed_ms:Date.now()-meta.started_ms,error:body?.error||raw.error||null,retry_after:retryAfter,should_retry:!success&&retryable&&meta.attempt<meta.max_attempts}}];"
+      }
+    },
+    {
+      "id": "4278e466-e419-491e-8ae2-c7efa259ac2b",
+      "name": "IF — Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.success }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "d887a565-e924-4398-962e-30b8e3438a52",
+      "name": "Return Success — Attempts / Timing / Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1670,
+        -60
+      ],
+      "parameters": {
+        "jsCode": "const cur=$json; const attempts=$('Classify Result + Timing').all().map(i=>i.json).filter(x=>x.operation_id===cur.operation_id).map(x=>({attempt:x.attempt,status:x.status,started_at:x.started_at,elapsed_ms:x.elapsed_ms,error:x.error,wait_seconds:x.wait_seconds})); const out={...cur}; for(const k of ['request','operation_id','attempt','max_attempts','started_ms','success','retryable','permanent','should_retry','retry_after']) delete out[k]; out.retry={ok:true,result:{status:cur.status,body:cur.body,headers:cur.headers,started_at:cur.started_at,elapsed_ms:cur.elapsed_ms},attempts,classification:'success',attempt_count:attempts.length,total_elapsed_ms:attempts.reduce((s,a)=>s+a.elapsed_ms,0),reconciled:attempts.length>1&&attempts.some(a=>a.status===0)}; return [{json:out}];"
+      }
+    },
+    {
+      "id": "3f378317-86ff-422d-8a6c-de60b6323652",
+      "name": "IF — Retryable + Attempts Remaining?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1670,
+        150
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.should_retry }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "741e5637-c5ef-401f-bf1c-1127bcaf6b92",
+      "name": "Calculate Backoff / Retry-After",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1910,
+        90
+      ],
+      "parameters": {
+        "jsCode": "const bases=[1,2,4]; const jitter=Math.floor(Math.random()*2); const wait_seconds=$json.status===429&&$json.retry_after?$json.retry_after:bases[$json.attempt-1]+jitter; return [{json:{...$json,wait_seconds}}];"
+      }
+    },
+    {
+      "id": "e0e94084-75bc-401e-9a77-b5f8f85b1bf1",
+      "name": "Wait — 1/2/4s + Integer Jitter 0–1s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2150,
+        90
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $json.wait_seconds }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "58337d44-d7c5-4a94-a9df-ad52dfe352d2",
+      "name": "Return Exhausted / Permanent Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1910,
+        260
+      ],
+      "parameters": {
+        "jsCode": "const cur=$json; const attempts=$('Classify Result + Timing').all().map(i=>i.json).filter(x=>x.operation_id===cur.operation_id).map(x=>({attempt:x.attempt,status:x.status,started_at:x.started_at,elapsed_ms:x.elapsed_ms,error:x.error,wait_seconds:x.wait_seconds})); const out={...cur}; for(const k of ['request','operation_id','attempt','max_attempts','started_ms','success','retryable','permanent','should_retry','retry_after']) delete out[k]; out.retry={ok:false,result:{status:cur.status,body:cur.body,headers:cur.headers,started_at:cur.started_at,elapsed_ms:cur.elapsed_ms},attempts,classification:cur.classification,attempt_count:attempts.length,total_elapsed_ms:attempts.reduce((s,a)=>s+a.elapsed_ms,0),reconciled:false}; return [{json:out}];"
+      }
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger — Retry Request": {
+      "main": [
+        [
+          {
+            "node": "Prepare Attempt Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Attempt Metadata": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items — 1 Initial + 3 Retries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items — 1 Initial + 3 Retries": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Stamp Attempt Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Attempt Start": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request — Perform Attempt (3s timeout)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request — Perform Attempt (3s timeout)": {
+      "main": [
+        [
+          {
+            "node": "Classify Result + Timing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Result + Timing": {
+      "main": [
+        [
+          {
+            "node": "IF — Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Success?": {
+      "main": [
+        [
+          {
+            "node": "Return Success — Attempts / Timing / Classification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF — Retryable + Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Retryable + Attempts Remaining?": {
+      "main": [
+        [
+          {
+            "node": "Calculate Backoff / Retry-After",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Exhausted / Permanent Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Backoff / Retry-After": {
+      "main": [
+        [
+          {
+            "node": "Wait — 1/2/4s + Integer Jitter 0–1s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait — 1/2/4s + Integer Jitter 0–1s": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items — 1 Initial + 3 Retries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  }
+}

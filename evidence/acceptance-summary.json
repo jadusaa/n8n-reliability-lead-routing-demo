@@ -1,0 +1,31 @@
+{
+  "_note": "Sanitized summary derived from the local acceptance run. Raw runner output, fixture payloads and machine-specific fields are intentionally omitted.",
+  "suite": "P0 lead-intake reliability acceptance suite",
+  "n8n_version": "1.121.3",
+  "result": {
+    "total": 23,
+    "passed": 23,
+    "failed": 0,
+    "failed_ids": []
+  },
+  "architecture_preflight": {
+    "main_workflow_active": true,
+    "retry_subworkflow_active_and_callable": true,
+    "replay_workflow_active": true,
+    "monitor_workflow_active": true,
+    "error_workflow_referenced_inactive_by_design": true,
+    "native_retry_orchestration": true,
+    "no_disabled_critical_nodes": true,
+    "no_code_node_network_or_retry_loops": true
+  },
+  "coverage_categories": [
+    "input validation and rejection paths",
+    "idempotency and duplicate handling",
+    "concurrency and atomic claim",
+    "retry orchestration with backoff",
+    "transient, 429 and 503 error classification",
+    "partial-failure handling",
+    "safe replay without repeated side effects",
+    "completion receipts and audit logging"
+  ]
+}

@@ -1,0 +1,18 @@
+// CALLER SIDE — in any workflow that makes a paid HTTP call:
+// Replace the HTTP Request node with ONE Execute Workflow node:
+{
+  "provider": "openai",
+  "endpoint": "/v1/chat/completions",
+  "method": "POST",
+  "url": "https://api.openai.com/v1/chat/completions",
+  "request_body": { "model": "gpt-4o-mini", "messages": [...] },
+  "workflow_name": "lead-router",
+  "execution_id": "={{ $execution.id }}",
+  "attempt": 1,
+  "price_table": {
+    "openai": { "default": { "unit_cost": 0.002, "unit_name": "per_call_fallback" } },
+    "serpapi": { "/search": { "unit_cost": 0.005, "unit_name": "per_search" } }
+  }
+}
+// The sub-workflow makes the call, logs cost (success or failed-but-billed),
+// and returns the provider response + log row to your main flow.

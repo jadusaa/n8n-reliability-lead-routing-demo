@@ -1,0 +1,267 @@
+{
+  "name": "Paid API Cost Logger \u2014 Reusable Sub-Workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -300,
+        0
+      ],
+      "webhookId": "cost-logger-trigger",
+      "inputs": [
+        "main"
+      ],
+      "workflowInputs": "json",
+      "inputSource": "passthrough"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize + enrich the call record. Caller passes:\n// { provider, endpoint, method, url, request_body, workflow_name, execution_id, price_table? }\nconst item = items[0].json;\nconst rec = {\n  provider: item.provider || 'unknown',\n  endpoint: item.endpoint || (item.url || ''),\n  method: (item.method || 'GET').toUpperCase(),\n  url: item.url || '',\n  request_body: item.request_body ?? null,\n  workflow_name: item.workflow_name || 'unassigned',\n  execution_id: item.execution_id || null,\n  attempt: item.attempt || 1,\n  requested_at: new Date().toISOString(),\n  // per-call price table override (caller may embed provider rates)\n  price_table: item.price_table || null,\n  _credentials_name: item.credentials_name || null\n};\nreturn [{ json: rec }];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Normalize Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "={{ $json.method }}",
+        "url": "={{ $json.url }}",
+        "sendBody": "={{ $json.method !== 'GET' }}",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request_body ?? {}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Paid HTTP Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        160,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract cost from response if provider returns it; else consult price table; else null.\n// HTTP node output: { statusCode, body, headers } (neverError=true so failures flow here too)\nconst rec = $('Normalize Record').first().json;\nconst resp = items[0].json;\nconst ok = resp.statusCode >= 200 && resp.statusCode < 300;\n\n// 1) provider-declared usage/cost (OpenAI/Anthropic style)\nlet cost_usd = null, usage = null;\nconst body = resp.body ?? resp;\nif (body && typeof body === 'object') {\n  usage = body.usage ?? body.metrics ?? null;\n  if (usage) {\n    // generic: usage.cost / usage.total_cost / tokens*rate\n    if (typeof usage.cost === 'number') cost_usd = usage.cost;\n    else if (typeof usage.total_cost === 'number') cost_usd = usage.total_cost;\n  }\n}\n\n// 2) price table fallback: { provider: { endpoint_or_default: {unit_cost, unit_name} } }\nlet pricing_basis = null;\nif (cost_usd == null && rec.price_table) {\n  const t = rec.price_table[rec.provider] || {};\n  const rule = t[rec.endpoint] ?? t['default'] ?? null;\n  if (rule) {\n    pricing_basis = rule.unit_name || 'per_call';\n    cost_usd = rule.unit_cost;  // flat per-call price\n  }\n}\n\nconst logRow = {\n  provider: rec.provider,\n  endpoint: rec.endpoint,\n  method: rec.method,\n  workflow_name: rec.workflow_name,\n  execution_id: rec.execution_id,\n  attempt: rec.attempt,\n  status_code: resp.statusCode ?? null,\n  success: ok,\n  cost_usd: cost_usd,\n  pricing_basis: pricing_basis,          // 'usage.cost' | price-table rule | null(unknown)\n  usage: usage,\n  latency_ms: null,\n  requested_at: rec.requested_at,\n  logged_at: new Date().toISOString(),\n  needs_reconciliation: (cost_usd == null) || !ok\n};\nreturn [{ json: logRow, pairedItem: { item: 0 } }];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Compute Cost",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ 'INSERT INTO api_cost_log (provider, endpoint, method, workflow_name, execution_id, attempt, status_code, success, cost_usd, pricing_basis, usage, requested_at, logged_at, needs_reconciliation) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)' }}",
+        "options": {
+          "queryReplacement": "={{ $json.provider }},{{ $json.endpoint }},{{ $json.method }},{{ $json.workflow_name }},{{ $json.execution_id }},{{ $json.attempt }},{{ $json.status_code }},{{ $json.success }},{{ $json.cost_usd }},{{ $json.pricing_basis }},{{ JSON.stringify($json.usage) }},{{ $json.requested_at }},{{ $json.logged_at }},{{ $json.needs_reconciliation }}"
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        880,
+        -120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ 'INSERT INTO api_cost_log (provider, endpoint, method, workflow_name, execution_id, attempt, status_code, success, cost_usd, pricing_basis, usage, requested_at, logged_at, needs_reconciliation) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)' }}",
+        "options": {
+          "queryReplacement": "={{ $json.provider }},{{ $json.endpoint }},{{ $json.method }},{{ $json.workflow_name }},{{ $json.execution_id }},{{ $json.attempt }},{{ $json.status_code }},{{ $json.success }},{{ $json.cost_usd }},{{ $json.pricing_basis }},{{ JSON.stringify($json.usage) }},{{ $json.requested_at }},{{ $json.logged_at }},{{ $json.needs_reconciliation }}"
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Log Failure (billed)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        880,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 5
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "Respond to Caller",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        -120
+      ]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Record": {
+      "main": [
+        [
+          {
+            "node": "Paid HTTP Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Paid HTTP Call": {
+      "main": [
+        [
+          {
+            "node": "Compute Cost",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Cost": {
+      "main": [
+        [
+          {
+            "node": "Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Success?": {
+      "main": [
+        [
+          {
+            "node": "Log Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Failure (billed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Success": {
+      "main": [
+        [
+          {
+            "node": "Respond to Caller",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Failure (billed)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Caller",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "description": "Reusable sub-workflow: owns paid HTTP calls, logs cost per call (success AND failed-but-billed) to Postgres. Caller: Execute Workflow node -> pass provider, endpoint, method, url, request_body, workflow_name, execution_id, attempt, price_table.",
+    "author": "Jawad (github.com/jadusaa)",
+    "version": "1.0"
+  },
+  "tags": [
+    "cost-logging",
+    "reliability",
+    "sub-workflow"
+  ]
+}
